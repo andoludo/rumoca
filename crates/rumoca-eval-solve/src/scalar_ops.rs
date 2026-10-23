@@ -21,6 +21,9 @@
 mod budget_tests;
 #[cfg(test)]
 mod fold_tests;
+mod function_conditional;
+#[cfg(test)]
+mod function_conditional_tests;
 mod pure_calls;
 #[cfg(test)]
 mod snapshot_tests;
@@ -116,6 +119,7 @@ fn expansion_cost(op: &LinearOp) -> Option<usize> {
         }
         // Typed bodies reserve their scalar storage and domain work separately.
         LinearOp::PureCall { .. } => Some(0),
+        LinearOp::FunctionConditional { program, .. } => function_conditional::cost(program),
         _ => None,
     }
 }
@@ -417,6 +421,31 @@ impl Lowering<'_> {
                 });
                 return Some(());
             }
+            LinearOp::LoadIndexedFoldCapture {
+                dst,
+                base,
+                stride,
+                dimensions,
+                indices,
+            } => {
+                let offset = crate::tensor_index::tensor_register_offset(
+                    dimensions,
+                    indices,
+                    None,
+                    |register| {
+                        pass.local(register)
+                            .and_then(|register| known.get(&register).copied())
+                            .ok_or_else(|| crate::invalid_row("fold subscript is not fixed"))
+                    },
+                )
+                .ok()?;
+                let index = base.checked_add(offset.checked_mul(*stride)?)?;
+                self.out.push(LinearOp::Move {
+                    dst: pass.local(*dst)?,
+                    src: Self::reg(pass.capture, index)?,
+                });
+                return Some(());
+            }
             _ => {}
         }
         let lowered = pass.scalar_op(op, current)?;
@@ -659,6 +688,11 @@ impl Lowering<'_> {
                 Some(*activation),
                 program,
             )?,
+            LinearOp::FunctionConditional {
+                dst_start,
+                capture_start,
+                program,
+            } => self.function_conditional(*dst_start, *capture_start, program)?,
             LinearOp::PureCall {
                 dst_start,
                 input_starts,
@@ -749,6 +783,24 @@ impl FoldPass {
             LinearOp::Move { dst, src } => match known.get(&self.local(*src)?) {
                 Some(value) => Some((self.local(*dst)?, *value)),
                 None => None,
+            },
+            // Subscript arithmetic such as `v[i + 1]`: exact while the operands
+            // are the integer-valued binders and literals tracked here.
+            LinearOp::Binary {
+                dst,
+                op: op @ (BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul),
+                lhs,
+                rhs,
+            } => match (known.get(&self.local(*lhs)?), known.get(&self.local(*rhs)?)) {
+                (Some(lhs), Some(rhs)) => Some((
+                    self.local(*dst)?,
+                    match op {
+                        BinaryOp::Add => lhs + rhs,
+                        BinaryOp::Sub => lhs - rhs,
+                        _ => lhs * rhs,
+                    },
+                )),
+                _ => None,
             },
             _ => None,
         })

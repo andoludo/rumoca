@@ -50,6 +50,44 @@ def test_to_casadi() -> None:
         assert float(parameter_jacobian) == -state
 
 
+
+NESTED_CONDITIONAL_CALL = """package Nested
+  function g "if-expression body: lowered as a function conditional"
+    input Real x;
+    output Real y;
+  algorithm
+    y := if x > 0 then x else -x;
+  end g;
+  function f
+    input Real u;
+    output Real v;
+  algorithm
+    v := 2*u + 1;
+  end f;
+  model M
+    input Real u[2];
+    input Real w;
+    Real x(start = -3, fixed = true);
+  equation
+    der(x) = -f(g(x)) + u[1] + 10*u[2] + 100*w;
+  end M;
+end Nested;
+"""
+
+
+def test_to_casadi_nested_conditional_call_and_input_names() -> None:
+    """A conditional call passed to another call exports as an explicit ODE,
+    and every input scalar is named the way the model declares it."""
+    if not _have("casadi"):
+        print("  (casadi not installed; skipping)")
+        return
+    exported = rm.Session().loads(NESTED_CONDITIONAL_CALL, model="Nested.M").to_casadi()
+    assert exported.input_names == ["u[1]", "u[2]", "w"]
+    assert exported.n_inputs == 3
+    for state in (-3.0, 0.5):
+        expected = -(2 * abs(state) + 1) + 1 + 20 + 300
+        assert float(exported.rhs(0.0, [state], [1.0, 2.0, 3.0], [])) == expected
+
 def test_to_jax() -> None:
     if not _have("jax"):
         print("  (jax not installed; skipping)")
@@ -149,6 +187,7 @@ def main() -> None:
         dependency = importlib.import_module(backend)
         print(f"required {backend}: {dependency.__version__}")
     test_to_casadi()
+    test_to_casadi_nested_conditional_call_and_input_names()
     test_to_jax()
     test_magic_export_returns_checked_solve_object()
     test_live_export_initializes_dependent_defaults()

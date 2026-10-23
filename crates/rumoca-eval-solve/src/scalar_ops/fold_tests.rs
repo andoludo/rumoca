@@ -171,3 +171,76 @@ fn a_fold_with_a_continuation_predicate_is_not_unrolled() {
     ];
     assert!(lower_scalar_ops(&ops, None).is_none());
 }
+
+/// Sums `captures[i + 1]` over `i in 1..=2`: the subscript is binder
+/// arithmetic, read through an indexed capture load (`v[i + 1]` in a loop).
+fn shifted_capture_sum() -> Vec<LinearOp> {
+    let update = vec![
+        LinearOp::LoadFoldCarried { dst: 0, index: 0 },
+        LinearOp::LoadFoldIndex {
+            dst: 1,
+            dimension: 0,
+        },
+        LinearOp::Const { dst: 2, value: 1.0 },
+        LinearOp::Binary {
+            dst: 3,
+            op: BinaryOp::Add,
+            lhs: 1,
+            rhs: 2,
+        },
+        LinearOp::LoadIndexedFoldCapture {
+            dst: 4,
+            base: 0,
+            stride: 1,
+            dimensions: vec![3].into_boxed_slice(),
+            indices: vec![TensorIndex::Runtime(3)].into_boxed_slice(),
+        },
+        LinearOp::Binary {
+            dst: 5,
+            op: BinaryOp::Add,
+            lhs: 0,
+            rhs: 4,
+        },
+        LinearOp::StoreOutput { src: 5 },
+    ];
+    let domain = StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            provenance: IndexBinderProvenance::Generated,
+            id: 0,
+            display_name: "i".into(),
+            lower: 1,
+            upper: 2,
+            step: 1,
+        }],
+    };
+    let program =
+        Arc::new(FunctionFoldProgram::checked(domain, 1, 3, update).expect("a checked fold"));
+    vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::LoadP { dst: 1, index: 0 },
+        LinearOp::LoadP { dst: 2, index: 1 },
+        LinearOp::LoadP { dst: 3, index: 2 },
+        LinearOp::FunctionFold {
+            dst_start: 4,
+            initial_start: 0,
+            capture_start: 1,
+            program,
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ]
+}
+
+#[test]
+fn a_binder_arithmetic_subscript_of_a_capture_unrolls() {
+    let canonical = shifted_capture_sum();
+    let lowered = lower_scalar_ops(&canonical, None).expect("a fixed subscript unrolls");
+    assert!(
+        lowered
+            .iter()
+            .all(|op| !matches!(op, LinearOp::FunctionFold { .. })),
+        "{lowered:?}"
+    );
+    let captures = [1.0, 10.0, 100.0];
+    assert_eq!(run(&canonical, &captures), 110.0);
+    assert_eq!(run(&lowered, &captures), 110.0);
+}

@@ -1426,6 +1426,7 @@ pub(super) fn solve_value(handle: SolveRenderHandle) -> Result<Value, CodegenErr
             "layout",
             "solve_layout",
             "state_names",
+            "input_names",
             "continuous",
             "initialization",
             "discrete",
@@ -1440,6 +1441,17 @@ pub(super) fn solve_value(handle: SolveRenderHandle) -> Result<Value, CodegenErr
             "state_names" => Some(Value::from_object(super::solver_names::SolverStateReport(
                 handle.clone(),
             ))),
+            // One name per input scalar (`u[2]` for an array element). The
+            // `solve_layout.input_scalar_names` field serializes one entry per
+            // declaration (`{name, dimensions}`), which is not a name list.
+            "input_names" => Some(Value::from(
+                handle
+                    .problem()
+                    .solve_layout
+                    .input_scalar_names
+                    .iter()
+                    .collect::<Vec<_>>(),
+            )),
             "continuous" => Some(continuous.clone()),
             "discrete" => Some(discrete.clone()),
             "events" => Some(events.clone()),
